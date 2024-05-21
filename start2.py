@@ -22,8 +22,11 @@ async def check_triggers(message: str):
     """
     triggers = ['Триггер1']
     for trigger in triggers:
-        if trigger in message:
-            return True
+        try:
+            if trigger in message:
+                return True
+        except TypeError:
+            pass
     return False
 
 
