@@ -8,6 +8,7 @@ from pyrogram.handlers import MessageHandler
 from pyrogram.types import Message
 from pyrogram import Client, filters
 from sqlalchemy.future import select
+import config_messages
 
 
 utc_tz = timezone.utc
@@ -22,8 +23,11 @@ async def check_triggers(message: str):
     """
     triggers = ['Триггер1']
     for trigger in triggers:
-        if trigger in message:
-            return True
+        try:
+            if trigger in message:
+                return True
+        except TypeError:
+            pass
     return False
 
 
@@ -43,19 +47,49 @@ async def update_user_status(session: SessionLocal, user_id: int, new_status: St
     )
     await session.execute(stmt)
     await session.commit()
+
+
+async def delete_message(user_id: int, message_ids: list):
+    '''
+    Удаляет сообщения пользователя.
+    '''
+    try:
+        await client.delete_messages(user_id, message_ids)
+    except Exception as e:
+        pass
     
     
-async def check_stopwords(message: str):
+async def check_stopwords(message: str, message_id, session: SessionLocal, user_id: int, current_time: datetime):
     """
-    Проверяет сообщение на наличие стоп-слов.
+    Проверяет сообщение на наличие стоп-слов и выполняет соответствующие действия.
 
     :param message: Текст сообщения для проверки.
-    :return: Возвращает True, если в сообщении есть стоп-слово, иначе False.
+    :param session: Сессия базы данных.
+    :param user_id: Идентификатор пользователя.
+    :param current_time: Текущее время для обновления временных меток.
+    :return: Возвращает True, если найдено стоп-слово 'прекрасно', иначе False.
     """
-    stopwords = ['прекрасно', 'ожидать']
-    for word in stopwords:
-        if word in message:
-            return True
+    stopwords = {
+        'прекрасно': True,
+        'ожидать': 'update_date'
+    }
+
+    for word, action in stopwords.items():
+        if word in message.lower():
+            if action == True:
+                return True
+            elif action == 'update_date':
+                await delete_message(user_id, [message_id])
+                user = await session.execute(select(User).where(User.id == user_id))
+                user = user.scalars().first()
+                if user:
+                    if user.msg1_sent_at is None:
+                        user.created_at = current_time
+                    elif user.msg2_sent_at is None:
+                        user.msg1_sent_at = current_time
+                    elif user.msg3_sent_at is None:
+                        user.msg2_sent_at = current_time
+                    await session.commit()
     return False
 
 
@@ -117,7 +151,7 @@ async def process_messages(app: Client, session: SessionLocal):
     for user in users:
         stopword_found = False
         async for message in app.get_chat_history(user.id, limit=10):
-            if await check_stopwords(str(message.text)):
+            if await check_stopwords(str(message.text), message.id, session, user.id, now):
                 stopword_found = True
                 break
 
@@ -127,16 +161,15 @@ async def process_messages(app: Client, session: SessionLocal):
 
         if user.msg3_sent_at:
             continue
-        elif user.msg1_sent_at is None and now >= user.created_at.replace(tzinfo=utc_tz) + timedelta(minutes=1):
+        elif user.msg1_sent_at is None and now >= user.created_at.replace(tzinfo=utc_tz) + timedelta(minutes=6):
             if await send_message(app, user.id, "Текст1"):
                 await update_msg_sent_at(session, user.id, 'msg1_sent_at', now)
-        elif user.msg1_sent_at and user.msg2_sent_at is None and now >= user.msg1_sent_at.replace(tzinfo=utc_tz) + timedelta(minutes=2):
+        elif user.msg1_sent_at and user.msg2_sent_at is None and now >= user.msg1_sent_at.replace(tzinfo=utc_tz) + timedelta(minutes=39):
             trigger_found = False
             async for message in app.get_chat_history(user.id, limit=10):
                 if await check_triggers(message.text):
                     trigger_found = True
                     break
-
             if not trigger_found:
                 if await send_message(app, user.id, "Текст2"):
                     await update_msg_sent_at(session, user.id, 'msg2_sent_at', now)
